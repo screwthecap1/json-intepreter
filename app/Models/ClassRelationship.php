@@ -6,5 +6,5 @@ use Illuminate\Database\Eloquent\Model;
 
 class ClassRelationship extends Model
 {
-    protected $fillable = ['class1', 'relationship', 'class2'];
+    protected $fillable = ['class1', 'relationship', 'class2', 'relationship_type'];
 }

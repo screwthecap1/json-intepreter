@@ -20,67 +20,69 @@ class XmlUploadController extends Controller
             ->pluck('class1')
             ->toArray();
 
-        // Передаём обе переменные в Blade
-        return view('upload', compact('relationships', 'terms'));
+        $relationshipTypes = ClassRelationship::select('relationship')
+            ->distinct()
+            ->orderBy('relationship')
+            ->pluck('relationship')
+            ->toArray();
+
+        return view('upload', compact('relationships', 'terms', 'relationshipTypes'));
     }
 
 
-    public function upload(Request $request)
+        public function upload(Request $request)
     {
-        logger('⏳ upload() стартует');
-
         $request->validate([
             'xml_file' => 'required|file',
         ]);
-        logger('✅ Файл прошёл валидацию');
 
         $xml = new SimpleXMLElement(file_get_contents($request->file('xml_file')));
-
-        // Прямой доступ к XML — draw.io сохранил <diagram> с полноценным деревом
-        $cells = $xml->diagram->mxGraphModel->root->children();
-        logger('📊 Найдено ячеек: ' . count($cells));
+        $diagram = $xml->diagram;
+        $cells = $diagram->mxGraphModel->root->children();
 
         ClassRelationship::truncate();
-        logger('🧹 Очистка таблицы');
 
-        $classes = [];
+        $nodes = []; // [id => ['label' => ..., 'type' => ...]]
 
+        // 1. Сохраняем все вершины
         foreach ($cells as $cell) {
             $attr = $cell->attributes();
-            if (isset($attr['value'])) {
-                $id = (string)$attr['id'];
-                $value = (string)$attr['value'];
-                $classes[$id] = $value;
-                logger("🧠 Добавлен терм: $id = $value");
+            if (isset($attr['vertex']) && $attr['vertex'] == '1') {
+                $style = (string) $attr['style'];
+                $type = 'action';
+                if (str_contains($style, 'rhombus')) {
+                    $type = 'decision';
+                }
+
+                $nodes[(string)$attr['id']] = [
+                    'label' => (string)($attr['value'] ?? 'Unknown'),
+                    'type' => $type
+                ];
             }
         }
 
+        // 2. Обрабатываем стрелки
         foreach ($cells as $cell) {
             $attr = $cell->attributes();
-            if (isset($attr['source']) && isset($attr['target'])) {
-                $source = $classes[(string)$attr['source']] ?? 'Unknown';
-                $target = $classes[(string)$attr['target']] ?? 'Unknown';
+            if (isset($attr['edge']) && $attr['edge'] == '1' && isset($attr['source']) && isset($attr['target'])) {
+                $sourceId = (string)$attr['source'];
+                $targetId = (string)$attr['target'];
+                $label = (string)($attr['value'] ?? '');
+                $source = $nodes[$sourceId]['label'] ?? 'Unknown';
+                $target = $nodes[$targetId]['label'] ?? 'Unknown';
 
                 ClassRelationship::create([
                     'class1' => $source,
-                    'relationship' => 'контролирует',
+                    'relationship' => $label ?: 'переход',
                     'class2' => $target,
+                    'relationship_type' => $nodes[$sourceId]['type'] ?? null,
                 ]);
-
-                ClassRelationship::create([
-                    'class1' => $target,
-                    'relationship' => 'контролируется',
-                    'class2' => $source,
-                ]);
-
-                logger("🔗 Связь: $source → $target");
             }
         }
 
-        logger('✅ upload() завершён, редиректим обратно');
-
-        return redirect()->route('xml.index')->with('success', 'Файл успешно загружен и обработан.');
+        return redirect()->route('xml.index')->with('success', 'Activity Diagram успешно загружена.');
     }
+
 
     public function filter(Request $request)
     {
@@ -109,7 +111,13 @@ class XmlUploadController extends Controller
             ->pluck('class1')
             ->toArray();
 
-        return view('upload', compact('relationships', 'terms'));
+        $relationshipTypes = ClassRelationship::select('relationship')
+            ->distinct()
+            ->orderBy('relationship')
+            ->pluck('relationship')
+            ->toArray();
+
+        return view('upload', compact('relationships', 'terms', 'relationshipTypes'));
     }
 }
 

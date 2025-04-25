@@ -115,8 +115,11 @@
             <label>Тип связи:</label>
             <select name="filter_type">
                 <option value="all">Все</option>
-                <option value="контролирует">Контролирует</option>
-                <option value="контролируется">Контролируется</option>
+                @foreach($relationshipTypes as $relType)
+                    <option value="{{ $relType }}" {{ request('filter_type') == $relType ? 'selected' : '' }}>
+                        {{ $relType }}
+                    </option>
+                @endforeach
             </select>
 
             <label>Поиск по терму:</label>
@@ -140,6 +143,7 @@
             <thead>
             <tr>
                 <th>Терм 1</th>
+                <th>Тип узла</th>
                 <th>Связь</th>
                 <th>Терм 2</th>
             </tr>
@@ -148,6 +152,7 @@
             @foreach($relationships as $rel)
                 <tr>
                     <td>{{ $rel->class1 }}</td>
+                    <td>{{ $rel->relationship_type ?? '—' }}</td>
                     <td>{{ $rel->relationship }}</td>
                     <td>{{ $rel->class2 }}</td>
                 </tr>
