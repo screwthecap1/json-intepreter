@@ -30,13 +30,13 @@ class XmlUploadController extends Controller
     }
 
 
-        public function upload(Request $request)
+    public function upload(Request $request)
     {
         $request->validate([
             'xml_file' => 'required|file',
         ]);
 
-        $xml = new SimpleXMLElement(file_get_contents($request->file('xml_file')));
+        $xml = new \SimpleXMLElement(file_get_contents($request->file('xml_file')));
         $diagram = $xml->diagram;
         $cells = $diagram->mxGraphModel->root->children();
 
@@ -44,15 +44,12 @@ class XmlUploadController extends Controller
 
         $nodes = []; // [id => ['label' => ..., 'type' => ...]]
 
-        // 1. Сохраняем все вершины
+        // 1. Сохраняем все узлы
         foreach ($cells as $cell) {
             $attr = $cell->attributes();
             if (isset($attr['vertex']) && $attr['vertex'] == '1') {
-                $style = (string) $attr['style'];
-                $type = 'action';
-                if (str_contains($style, 'rhombus')) {
-                    $type = 'decision';
-                }
+                $style = (string)$attr['style'];
+                $type = str_contains($style, 'rhombus') ? 'decision' : 'action';
 
                 $nodes[(string)$attr['id']] = [
                     'label' => (string)($attr['value'] ?? 'Unknown'),
@@ -61,27 +58,35 @@ class XmlUploadController extends Controller
             }
         }
 
-        // 2. Обрабатываем стрелки
+        // 2. Добавляем 2 связи: причина → и следствие ←
         foreach ($cells as $cell) {
             $attr = $cell->attributes();
             if (isset($attr['edge']) && $attr['edge'] == '1' && isset($attr['source']) && isset($attr['target'])) {
                 $sourceId = (string)$attr['source'];
                 $targetId = (string)$attr['target'];
-                $label = (string)($attr['value'] ?? '');
                 $source = $nodes[$sourceId]['label'] ?? 'Unknown';
                 $target = $nodes[$targetId]['label'] ?? 'Unknown';
 
+                // Прямая связь: A причина для B
                 ClassRelationship::create([
                     'class1' => $source,
-                    'relationship' => $label ?: 'переход',
+                    'relationship' => 'причина для',
                     'class2' => $target,
                     'relationship_type' => $nodes[$sourceId]['type'] ?? null,
                 ]);
+
+                // Обратная связь: B следствие для A
+                ClassRelationship::create([
+                    'class1' => $target,
+                    'relationship' => 'следствие для',
+                    'class2' => $source,
+                    'relationship_type' => $nodes[$targetId]['type'] ?? null,
+                ]);
             }
         }
-
-        return redirect()->route('xml.index')->with('success', 'Activity Diagram успешно загружена.');
+        return redirect()->route('xml.index')->with('success', 'XML диаграмма успешно загружена.');
     }
+
 
 
     public function filter(Request $request)

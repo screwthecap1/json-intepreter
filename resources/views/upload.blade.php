@@ -149,13 +149,20 @@
             </tr>
             </thead>
             <tbody>
-            @foreach($relationships as $rel)
+            @foreach($relationships->groupBy('class1') as $class => $group)
                 <tr>
-                    <td>{{ $rel->class1 }}</td>
-                    <td>{{ $rel->relationship_type ?? '—' }}</td>
-                    <td>{{ $rel->relationship }}</td>
-                    <td>{{ $rel->class2 }}</td>
+                    <td colspan="4" style="background: #ecf0f1; font-weight: bold; text-align: left;">
+                        {{ $class }}
+                    </td>
                 </tr>
+                @foreach($group as $rel)
+                    <tr>
+                        <td>{{ $rel->class1 }}</td>
+                        <td>{{ $rel->relationship_type ?? '—' }}</td>
+                        <td>{{ $rel->relationship }}</td>
+                        <td>{{ $rel->class2 }}</td>
+                    </tr>
+                @endforeach
             @endforeach
             </tbody>
         </table>
