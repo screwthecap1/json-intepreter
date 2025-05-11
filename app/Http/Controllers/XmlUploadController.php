@@ -26,7 +26,12 @@ class XmlUploadController extends Controller
             ->pluck('relationship')
             ->toArray();
 
-        return view('upload', compact('relationships', 'terms', 'relationshipTypes'));
+        $definitionsByTerm = ClassRelationship::select('class1', 'definition', 'relationship_category')
+            ->groupBy('class1', 'definition', 'relationship_category')
+            ->get()
+            ->keyBy('class1');
+
+        return view('upload', compact('relationships', 'terms', 'relationshipTypes', 'definitionsByTerm'));
     }
 
 
@@ -87,7 +92,21 @@ class XmlUploadController extends Controller
         return redirect()->route('xml.index')->with('success', 'XML диаграмма успешно загружена.');
     }
 
+    public function updateTerm(Request $request)
+    {
+        $term = $request->input('term');
+        $definition = $request->input('definition');
+        $category = $request->input('relationship_category');
 
+        ClassRelationship::where('class1', $term)
+            ->orWhere('class2', $term)
+            ->update([
+                'definition' => $definition,
+                'relationship_category' => $category,
+            ]);
+
+        return redirect()->back()->with('success', 'Определение и категория обновлены.');
+    }
 
     public function filter(Request $request)
     {

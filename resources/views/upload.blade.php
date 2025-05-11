@@ -137,6 +137,34 @@
         </form>
     </div>
 
+    <h2>Редактировать понятия</h2>
+    @foreach($terms as $term)
+        @php
+            $definition = $definitionsByTerm[$term]->definition ?? '';
+            $category = $definitionsByTerm[$term]->relationship_category ?? '';
+        @endphp
+
+        <form action="{{ route('term.update', $term) }}" method="POST">
+            @csrf
+            @method('PUT')
+
+            <input type="hidden" name="term" value="{{ $term }}">
+
+            <label>Определение для "{{ $term }}"</label><br>
+            <textarea name="definition" rows="2" style="width: 100%">{{ $definition }}</textarea><br><br>
+
+            <label>Категория связи:</label><br>
+            <select name="relationship_category">
+                <option value="">—</option>
+                <option value="базовая" {{ $category === 'базовая' ? 'selected' : '' }}>Базовая</option>
+                <option value="причинно-следственная" {{ $category === 'причинно-следственная' ? 'selected' : '' }}>Причинно-следственная</option>
+                <option value="ассоциативная" {{ $category === 'ассоциативная' ? 'selected' : '' }}>Ассоциативная</option>
+            </select><br><br>
+
+            <button type="submit">Сохранить</button>
+        </form>
+    @endforeach
+
     <!-- Таблица с результатами -->
     @if(isset($relationships) && $relationships->count())
         <table>
