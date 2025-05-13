@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use App\Models\ClassRelationship;
 use SimpleXMLElement;
+use Illuminate\Support\Str;
 
 class XmlUploadController extends Controller
 {
@@ -12,12 +13,13 @@ class XmlUploadController extends Controller
     {
         $relationships = ClassRelationship::all();
 
-        // Новый код: собираем все уникальные термы
-        $terms = ClassRelationship::select('class1')
-            ->union(ClassRelationship::select('class2'))
-            ->distinct()
-            ->orderBy('class1')
-            ->pluck('class1')
+        $grouped = $relationships->groupBy('class1');
+
+        $terms = $grouped->keys()
+            ->merge(
+                $relationships->pluck('class2')->diff($grouped->keys())
+            )
+            ->values()
             ->toArray();
 
         $relationshipTypes = ClassRelationship::select('relationship')
@@ -94,19 +96,20 @@ class XmlUploadController extends Controller
 
     public function updateTerm(Request $request)
     {
-        $term = $request->input('term');
-        $definition = $request->input('definition');
-        $category = $request->input('relationship_category');
+        $originalTerm = $request->input('term');
+        $safeTerm = Str::slug($originalTerm, '_');
 
-        ClassRelationship::where('class1', $term)
-            ->orWhere('class2', $term)
-            ->update([
-                'definition' => $definition,
-                'relationship_category' => $category,
-            ]);
+        $definition = $request->input("definition_$safeTerm");
+        $category = $request->input("relationship_category_$safeTerm");
+
+        ClassRelationship::where('class1', $originalTerm)->update([
+            'definition' => $definition,
+            'relationship_category' => $category,
+        ]);
 
         return redirect()->back()->with('success', 'Определение и категория обновлены.');
     }
+
 
     public function filter(Request $request)
     {
