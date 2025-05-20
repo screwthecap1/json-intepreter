@@ -137,38 +137,59 @@
         </form>
     </div>
 
-    <h2>Редактировать понятия</h2>
-    @foreach($terms as $term)
-        @php
-            $safeTerm = Str::slug($term, '_');
-            $definition = $definitionsByTerm[$term]->definition ?? '';
-            $category = $definitionsByTerm[$term]->relationship_category ?? '';
-        @endphp
+    <!-- Измененная форма редактирования связей -->
+    <h2>Редактировать связи</h2>
+    <form action="{{ route('xml.relationship.update') }}" method="POST">
+        @csrf
 
+        <label>Источник (старое имя блока):</label>
+        <select name="source" required>
+            @foreach($terms as $term)
+                <option value="{{ $term }}" {{ $term === 'Начало' ? 'selected' : '' }}>{{ $term }}</option>
+            @endforeach
+        </select><br><br>
 
-        <form action="{{ route('term.update', $term) }}" method="POST">
-            @csrf
-            @method('PUT')
-            <input type="hidden" name="term" value="{{ $term }}">
+        <label>Новое имя (определение):</label>
+        <input type="text" name="new_name" placeholder="Оставьте пустым, чтобы не менять"><br><br>
 
-            <label>Определение для "{{ $term }}"</label><br>
-            <textarea name="definition_{{ $safeTerm }}" rows="2" style="width: 100%">{{ $definition }}</textarea><br><br>
+        <label>Тип узла:</label>
+        <select name="node_type">
+            <option value="action">Прямоугольник (Action)</option>
+            <option value="decision">Ромб (Decision)</option>
+        </select><br><br>
 
-            <label>Категория связи:</label><br>
-            <select name="relationship_category_{{ $safeTerm }}">
-                <option value="">—</option>
-                <option value="базовая" {{ $category === 'базовая' ? 'selected' : '' }}>Базовая</option>
-                <option value="причинно-следственная" {{ $category === 'причинно-следственная' ? 'selected' : '' }}>Причинно-следственная</option>
-                <option value="ассоциативная" {{ $category === 'ассоциативная' ? 'selected' : '' }}>Ассоциативная</option>
-                <option value="прагматическая" {{ $category === 'прагматическая' ? 'selected' : '' }}>Прагматическая</option>
-            </select><br><br>
+        <label>Тип связи:</label>
+        <select name="relationship" required>
+            @foreach($allRelations as $relation)
+                <option value="{{ $relation }}">{{ $relation }}</option>
+            @endforeach
+        </select><br><br>
 
-            <button type="submit">Сохранить</button>
-        </form>
-    @endforeach
+        <label>Назначение (связь с):</label>
+        <select name="target" required>
+            @foreach(array_diff($terms, ['Начало']) as $term)
+                <option value="{{ $term }}">{{ $term }}</option>
+            @endforeach
+        </select><br><br>
+
+        <button type="submit">Обновить связь</button>
+    </form>
+
+    <form action="{{ route('terms.reset') }}" method="POST" style="margin-top: 20px;">
+        @csrf
+        @method('DELETE')
+        <button type="submit" onclick="return confirm('Вы уверены, что хотите очистить все определения и категории?');">
+            Очистить все определения и категории
+        </button>
+    </form>
+
+    <form action="{{ route('xml.export') }}" method="GET" style="margin-top: 30px;">
+        <button type="submit">Скачать XML</button>
+    </form>
+
 
     <!-- Таблица с результатами -->
-    @if(isset($relationships) && $relationships->count())
+    @if(isset($relationshipsGrouped) && $relationshipsGrouped->count())
         <table>
             <thead>
             <tr>
@@ -179,20 +200,22 @@
             </tr>
             </thead>
             <tbody>
-            @foreach($relationships->groupBy('class1') as $class => $group)
-                <tr>
-                    <td colspan="4" style="background: #ecf0f1; font-weight: bold; text-align: left;">
-                        {{ $class }}
-                    </td>
-                </tr>
-                @foreach($group as $rel)
+            @foreach($relationshipsGrouped as $class => $group)
+                @if($group->count())
                     <tr>
-                        <td>{{ $rel->class1 }}</td>
-                        <td>{{ $rel->relationship_type ?? '—' }}</td>
-                        <td>{{ $rel->relationship }}</td>
-                        <td>{{ $rel->class2 }}</td>
+                        <td colspan="4" style="background: #ecf0f1; font-weight: bold; text-align: left;">
+                            {{ $class }}
+                        </td>
                     </tr>
-                @endforeach
+                    @foreach($group as $rel)
+                        <tr>
+                            <td>{{ $rel->class1 }}</td>
+                            <td>{{ $rel->relationship_type ?? '—' }}</td>
+                            <td>{{ $rel->relationship }}</td>
+                            <td>{{ $rel->class2 }}</td>
+                        </tr>
+                    @endforeach
+                @endif
             @endforeach
             </tbody>
         </table>
