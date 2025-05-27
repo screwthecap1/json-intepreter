@@ -6,6 +6,7 @@ use Illuminate\Http\Request;
 use App\Models\ClassRelationship;
 use SimpleXMLElement;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\App;
 
 class XmlUploadController extends Controller
 {
@@ -13,7 +14,27 @@ class XmlUploadController extends Controller
     {
         $relationships = ClassRelationship::all();
 
-        // Шаг 1. Считаем позиции Y из diagram.xml
+        // Дефолтные определения
+        $defaultDefinitions = [
+            'Начало' => 'Начальная точка процесса.',
+            'Ввод логина и пароля' => 'Этап, на котором пользователь вводит свои данные.',
+            'Данные корректны?' => 'Проверка правильности введенных данных.',
+            'Переход в профиль' => 'Переход в личный кабинет пользователя.',
+            'Ошибка авторизации' => 'Сообщение об ошибке при неверном вводе.',
+            'Конец' => 'Завершение процесса.'
+        ];
+
+        // Обновляем определения только если они пустые
+        foreach ($defaultDefinitions as $term => $definition) {
+            ClassRelationship::where('class1', $term)
+                ->where(function ($q) {
+                    $q->whereNull('definition')
+                        ->orWhere('definition', '');
+                })
+                ->update(['definition' => $definition]);
+        }
+
+        // --- СЧИТЫВАЕМ ПОЗИЦИИ Y ---
         $filePath = storage_path('app/private/diagram.xml');
         $positions = [];
 
@@ -32,27 +53,62 @@ class XmlUploadController extends Controller
             }
         }
 
-        // Шаг 2. Собираем и сортируем термы по координате Y
-        $terms = $relationships->pluck('class1')
+        // 🔥 Сначала берём все термы из XML (из value у mxCell)
+        $xmlTerms = [];
+
+        if (file_exists($filePath)) {
+            $xml = simplexml_load_file($filePath);
+            foreach ($xml->diagram->mxGraphModel->root->mxCell as $cell) {
+                if ((string)$cell['vertex'] === '1') {
+                    $xmlTerms[] = (string)$cell['value'];
+                }
+            }
+        }
+
+// 🔄 Добавим термы из базы, если вдруг чего-то нет
+        $terms = collect($xmlTerms)
+            ->merge($relationships->pluck('class1'))
             ->merge($relationships->pluck('class2'))
             ->unique()
-            ->filter(fn($term) => isset($positions[$term]))
-            ->sortBy(fn($term) => $positions[$term])
+            ->values()
+            ->sortBy(function ($term) use ($positions) {
+                return $positions[$term] ?? INF;
+            })
             ->values()
             ->toArray();
 
-        // Шаг 3. Поднимаем "Начало" вверх
-        if (($key = array_search('Начало', $terms)) !== false) {
-            unset($terms[$key]);
+
+        // --- ПЕРЕНОСИМ "Начало" и "Конец" ---
+        if (($startKey = array_search('Начало', $terms)) !== false) {
+            unset($terms[$startKey]);
             array_unshift($terms, 'Начало');
         }
 
-        // Шаг 4. Группируем связи по отсортированным термам
+        if (($endKey = array_search('Конец', $terms)) !== false) {
+            unset($terms[$endKey]);
+            $terms[] = 'Конец';
+        }
+
+        // --- ГРУППИРУЕМ СВЯЗИ ---
         $relationshipsGrouped = collect($terms)->mapWithKeys(function ($term) use ($relationships) {
-            return [$term => $relationships->where('class1', $term)];
+            return [$term => $relationships->filter(function ($rel) use ($term) {
+                return $rel->class1 === $term || $rel->class2 === $term;
+            })];
         });
 
-        // Справочник типов связей
+        // --- ДОСТАЁМ ОПРЕДЕЛЕНИЯ ---
+        // --- ДОСТАЁМ ОПРЕДЕЛЕНИЯ ---
+        $definitions = [];
+        foreach ($terms as $term) {
+            $definition = ClassRelationship::where('class1', $term)
+                ->whereNotNull('definition')
+                ->where('definition', '!=', '')
+                ->value('definition');
+
+            $definitions[$term] = $definition ?? ($defaultDefinitions[$term] ?? '');
+        }
+
+        // --- ТИПЫ СВЯЗЕЙ ---
         $relationshipTypes = ClassRelationship::select('relationship')
             ->distinct()
             ->orderBy('relationship')
@@ -72,7 +128,13 @@ class XmlUploadController extends Controller
             'Инструмент для', 'Использует'
         ];
 
-        return view('upload', compact('relationshipsGrouped', 'terms', 'relationshipTypes', 'allRelations'));
+        return view('upload', compact(
+            'relationshipsGrouped',
+            'terms',
+            'relationshipTypes',
+            'allRelations',
+            'definitions'
+        ));
     }
 
 
@@ -85,6 +147,7 @@ class XmlUploadController extends Controller
         // Сохраняем оригинал загруженного XML
         $original = file_get_contents($request->file('xml_file'));
         file_put_contents(storage_path('app/private/diagram.xml'), $original);
+        file_put_contents(storage_path('app/private/diagram_original.xml'), $original);
 
         $xml = new \SimpleXMLElement($original);
         $diagram = $xml->diagram;
@@ -108,11 +171,10 @@ class XmlUploadController extends Controller
                     'style' => $style
                 ];
             } elseif (isset($attr['edge']) && $attr['edge'] == '1') {
-                // Сохраняем информацию о связях
                 $edges[] = [
                     'source' => (string)$attr['source'],
                     'target' => (string)$attr['target'],
-                    'label' => (string)($attr['value'] ?? '') // Для подписей стрелок
+                    'label' => (string)($attr['value'] ?? '')
                 ];
             }
         }
@@ -123,17 +185,78 @@ class XmlUploadController extends Controller
             $target = $nodes[$edge['target']]['label'] ?? 'Unknown';
             $sourceType = $nodes[$edge['source']]['type'] ?? null;
 
-            // Для ромбиков используем подпись стрелки как тип связи
             $relationship = ($sourceType === 'decision' && !empty($edge['label']))
                 ? $edge['label']
                 : 'причина для';
 
+            // Добавляем прямую связь
             ClassRelationship::create([
                 'class1' => $source,
                 'relationship' => $relationship,
                 'class2' => $target,
                 'relationship_type' => $sourceType,
             ]);
+
+            // Добавляем обратную связь "следствие для", если нужно и ещё не существует
+            if ($relationship === 'причина для' &&
+                !ClassRelationship::where('class1', $target)
+                    ->where('class2', $source)
+                    ->where('relationship', 'следствие для')
+                    ->exists()) {
+                ClassRelationship::create([
+                    'class1' => $target,
+                    'relationship' => 'следствие для',
+                    'class2' => $source,
+                    'relationship_type' => $sourceType,
+                ]);
+            }
+        }
+
+        // Удаляем старые связи между Начало и Ввод логина и пароля
+        // Удаляем ТОЛЬКО временные связи между Начало и Ввод логина и пароля
+        ClassRelationship::where('class1', 'Начало')
+            ->where('class2', 'Ввод логина и пароля')
+            ->where('relationship', 'по времени (позже)')
+            ->delete();
+
+        ClassRelationship::where('class1', 'Ввод логина и пароля')
+            ->where('class2', 'Начало')
+            ->where('relationship', 'по времени (раньше)')
+            ->delete();
+
+
+        // Добавляем временные связи
+        ClassRelationship::create([
+            'class1' => 'Начало',
+            'relationship' => 'по времени (позже)',
+            'class2' => 'Ввод логина и пароля',
+            'relationship_type' => 'action'
+        ]);
+
+        ClassRelationship::create([
+            'class1' => 'Ввод логина и пароля',
+            'relationship' => 'по времени (раньше)',
+            'class2' => 'Начало',
+            'relationship_type' => 'action'
+        ]);
+
+        // --- ОПРЕДЕЛЕНИЯ ПО УМОЛЧАНИЮ ---
+        $defaultDefinitions = [
+            'Начало' => 'Начальная точка процесса.',
+            'Ввод логина и пароля' => 'Этап, на котором пользователь вводит свои данные.',
+            'Данные корректны?' => 'Проверка правильности введенных данных.',
+            'Переход в профиль' => 'Переход в личный кабинет пользователя.',
+            'Ошибка авторизации' => 'Сообщение об ошибке при неверном вводе.',
+            'Конец' => 'Завершение процесса.'
+        ];
+
+        // Обновляем определения только для стандартных терминов
+        foreach ($defaultDefinitions as $term => $definition) {
+            ClassRelationship::where('class1', $term)
+                ->where(function ($q) {
+                    $q->whereNull('definition')->orWhere('definition', '');
+                })
+                ->update(['definition' => $definition]);
         }
 
         return redirect()->route('xml.index')->with('success', 'XML диаграмма успешно загружена.');
@@ -158,6 +281,7 @@ class XmlUploadController extends Controller
 
     public function filter(Request $request)
     {
+        $positions = [];
         $type = $request->input('filter_type');
         $term = $request->input('term_filter');
 
@@ -179,13 +303,22 @@ class XmlUploadController extends Controller
         $terms = $relationships->pluck('class1')
             ->merge($relationships->pluck('class2'))
             ->unique()
-            ->sort()
+            ->values()
+            ->sortBy(function ($term) use ($positions) {
+                return $positions[$term] ?? INF; // INF — чтобы элементы без позиции шли в конец
+            })
             ->values()
             ->toArray();
 
-        if (($key = array_search('Начало', $terms)) !== false) {
-            unset($terms[$key]);
+        // Переместим "Начало" в начало, а "Конец" — в конец
+        if (($startKey = array_search('Начало', $terms)) !== false) {
+            unset($terms[$startKey]);
             array_unshift($terms, 'Начало');
+        }
+
+        if (($endKey = array_search('Конец', $terms)) !== false) {
+            unset($terms[$endKey]);
+            $terms[] = 'Конец';
         }
 
         $relationshipsGrouped = collect($terms)->mapWithKeys(function ($term) use ($relationships) {
@@ -232,33 +365,29 @@ class XmlUploadController extends Controller
     {
         $request->validate([
             'source' => 'required|string',
-            'target' => 'required|string',
-            'relationship' => 'required|string',
-            'new_name' => 'nullable|string',
-            'node_type' => 'nullable|in:action,decision' // Добавляем выбор типа узла
+            'target' => 'nullable|string',
+            'relationship' => 'nullable|string',
+            'node_type' => 'nullable|in:action,decision',
+            'definition' => 'nullable|string',
+            'rename_term' => 'nullable|string'
         ]);
 
         $oldName = $request->source;
-        $newName = $request->new_name ?: $oldName;
+        $newName = $request->rename_term ?: $oldName;
 
-        // 1. Переименование блока в БД
-        if ($request->new_name) {
-            ClassRelationship::where('class1', $oldName)->update(['class1' => $newName]);
-            ClassRelationship::where('class2', $oldName)->update(['class2' => $newName]);
+        // Если меняется только описание
+        if ($request->filled('definition') &&
+            !$request->filled('rename_term') &&
+            !$request->filled('node_type') &&
+            !$request->filled('relationship') &&
+            !$request->filled('target')) {
+
+            ClassRelationship::where('class1', $oldName)
+                ->update(['definition' => $request->definition]);
+            return redirect()->route('xml.index')->with('success', 'Описание обновлено.');
         }
 
-        // 2. Удалить все старые связи ОТ источника
-        ClassRelationship::where('class1', $newName)->delete();
-
-        // 3. Добавить новую связь
-        ClassRelationship::create([
-            'class1' => $newName,
-            'relationship' => $request->relationship,
-            'class2' => $request->target,
-            'relationship_type' => $request->node_type, // Сохраняем тип узла
-        ]);
-
-        // 4. Обновить XML файл
+        // Обновляем XML
         $filePath = storage_path('app/private/diagram.xml');
         if (!file_exists($filePath)) {
             return redirect()->back()->with('error', 'XML файл не найден');
@@ -271,32 +400,84 @@ class XmlUploadController extends Controller
 
         $root = $xml->diagram->mxGraphModel->root;
 
-        // 5. Сбор ID по названиям блоков
-        $idMap = [];
-        foreach ($root->mxCell as $cell) {
-            if ((string)$cell['vertex'] === '1') {
-                $label = (string)$cell['value'];
-                $idMap[$label] = (string)$cell['id'];
-            }
-        }
+        // Если меняется имя термина
+        if ($request->filled('rename_term') && $request->rename_term !== $oldName) {
+            // Обновляем в базе данных
+            ClassRelationship::where('class1', $oldName)->update(['class1' => $request->rename_term]);
+            ClassRelationship::where('class2', $oldName)->update(['class2' => $request->rename_term]);
 
-        $sourceId = $idMap[$oldName] ?? null;
-        $targetId = $idMap[$request->target] ?? null;
-
-        if ($sourceId && $targetId) {
-            // 6. Удалить старые исходящие стрелки от source
-            foreach ($root->mxCell as $i => $cell) {
-                if ((string)$cell['edge'] === '1' && (string)$cell['source'] === $sourceId) {
-                    unset($root->mxCell[$i]);
+            // Обновляем XML
+            foreach ($root->mxCell as $cell) {
+                if ((string)$cell['vertex'] === '1' && (string)$cell['value'] === $oldName) {
+                    $cell['value'] = $request->rename_term;
                 }
             }
 
-            // 7. Переименовать блок и обновить тип
-            foreach ($root->mxCell as $cell) {
-                if ((string)$cell['vertex'] === '1' && (string)$cell['value'] === $oldName) {
-                    $cell['value'] = $newName;
+            $newName = $request->rename_term;
+        }
 
-                    // Обновляем тип узла
+        // Обновляем описание, если оно передано
+        if ($request->filled('definition')) {
+            ClassRelationship::where('class1', $newName)
+                ->update(['definition' => $request->definition]);
+        }
+
+        // Если указана цель связи, обновляем связи
+        if ($request->filled('target')) {
+            // Удаляем старые связи
+            ClassRelationship::where('class1', $newName)
+                ->where('class2', '!=', $request->target)
+                ->delete();
+
+            // Создаем/обновляем новую связь
+            ClassRelationship::updateOrCreate([
+                'class1' => $newName,
+                'class2' => $request->target,
+            ], [
+                'relationship' => $request->relationship,
+                'relationship_type' => $request->node_type,
+            ]);
+
+            // Обновляем стрелки в XML
+            $idMap = [];
+            foreach ($root->mxCell as $cell) {
+                if ((string)$cell['vertex'] === '1') {
+                    $label = (string)$cell['value'];
+                    $idMap[$label] = (string)$cell['id'];
+                }
+            }
+
+            $sourceId = $idMap[$newName] ?? null;
+            $targetId = $idMap[$request->target] ?? null;
+
+            if ($sourceId && $targetId) {
+                // Удаляем старые стрелки
+                foreach ($root->mxCell as $i => $cell) {
+                    if ((string)$cell['edge'] === '1' &&
+                        (string)$cell['source'] === $sourceId) {
+                        unset($root->mxCell[$i]);
+                    }
+                }
+
+                // Добавляем новую стрелку
+                $edge = $root->addChild('mxCell');
+                $edge->addAttribute('id', 'edge_' . uniqid());
+                $edge->addAttribute('edge', '1');
+                $edge->addAttribute('source', $sourceId);
+                $edge->addAttribute('target', $targetId);
+                $edge->addAttribute('style', 'endArrow=block;html=1;');
+                $edge->addAttribute('parent', '1');
+
+                $geometry = $edge->addChild('mxGeometry');
+                $geometry->addAttribute('relative', '1');
+                $geometry->addAttribute('as', 'geometry');
+            }
+        }
+
+        // Обновляем тип узла, если указан
+        if ($request->filled('node_type')) {
+            foreach ($root->mxCell as $cell) {
+                if ((string)$cell['vertex'] === '1' && (string)$cell['value'] === $newName) {
                     $style = (string)$cell['style'];
                     if ($request->node_type === 'decision') {
                         $cell['style'] = str_replace('rounded=1', 'rhombus', $style);
@@ -305,25 +486,11 @@ class XmlUploadController extends Controller
                     }
                 }
             }
-
-            // 8. Добавить новую стрелку
-            $edge = $root->addChild('mxCell');
-            $edge->addAttribute('id', 'edge_' . uniqid());
-            $edge->addAttribute('edge', '1');
-            $edge->addAttribute('source', $sourceId);
-            $edge->addAttribute('target', $targetId);
-            $edge->addAttribute('style', 'endArrow=block;html=1;');
-            $edge->addAttribute('parent', '1');
-
-            $geometry = $edge->addChild('mxGeometry');
-            $geometry->addAttribute('relative', '1');
-            $geometry->addAttribute('as', 'geometry');
-
-            // 9. Сохранить XML
-            file_put_contents($filePath, $xml->asXML());
         }
 
-        return redirect()->back()->with('success', 'Связь обновлена корректно.');
+        file_put_contents($filePath, $xml->asXML());
+
+        return redirect()->route('xml.index')->with('success', 'Изменения сохранены.');
     }
 
     public function export()
@@ -396,28 +563,50 @@ class XmlUploadController extends Controller
         $relations = ClassRelationship::all();
         $edgeCounter = 1000;
 
-        // Для обычных блоков - только последняя связь
-        $usedSources = [];
-        // Для ромбиков - все связи
+        $normalRelations = [];
         $decisionRelations = [];
 
         foreach ($relations as $rel) {
-            if (in_array($idMap[$rel->class1] ?? null, $decisionBlocks)) {
+            $sourceId = $idMap[$rel->class1] ?? null;
+            if (!$sourceId) continue;
+
+            if (in_array($sourceId, $decisionBlocks)) {
                 $decisionRelations[] = $rel;
             } else {
-                $usedSources[$rel->class1] = $rel;
+                // Храним только последнюю связь для обычных блоков
+                $normalRelations[$rel->class1][] = $rel;
             }
         }
 
-        // Добавляем связи для обычных блоков (только последнюю)
-        foreach ($usedSources as $rel) {
-            $this->addEdge($newRoot, $idMap, $rel, $edgeCounter++);
+        // Добавляем только ОДНУ связь от обычных блоков
+        // Добавляем ВСЕ связи — и от обычных, и от ромбов
+        foreach ($normalRelations as $rels) {
+            foreach ($rels as $rel) {
+                $this->addEdge($newRoot, $idMap, $rel, $edgeCounter++);
+            }
         }
-
-        // Добавляем ВСЕ связи для ромбиков
         foreach ($decisionRelations as $rel) {
             $this->addEdge($newRoot, $idMap, $rel, $edgeCounter++);
         }
+
+
+//        // Для обычных блоков - только последняя связь
+//        $usedSources = [];
+//        // Для ромбиков - все связи
+//        $decisionRelations = [];
+//
+//        foreach ($relations as $rel) {
+//            if (in_array($idMap[$rel->class1] ?? null, $decisionBlocks)) {
+//                $decisionRelations[] = $rel;
+//            } else {
+//                $usedSources[$rel->class1] = $rel;
+//            }
+//        }
+
+//        // Добавляем связи для обычных блоков (только последнюю)
+//        foreach ($usedSources as $rel) {
+//            $this->addEdge($newRoot, $idMap, $rel, $edgeCounter++);
+//        }
 
         // Форматируем вывод
         $dom = new \DOMDocument('1.0');
@@ -434,30 +623,47 @@ class XmlUploadController extends Controller
 // Вспомогательная функция для добавления стрелки
     private function addEdge($root, $idMap, $relation, $edgeId)
     {
+        // Пропустить только обратные связи
+        if (in_array($relation->relationship, ['следствие для', 'по времени (раньше)'])) {
+            return;
+        }
+
         $sourceId = $idMap[$relation->class1] ?? null;
         $targetId = $idMap[$relation->class2] ?? null;
 
-        if ($sourceId && $targetId) {
-            $edge = $root->addChild('mxCell');
-            $edge->addAttribute('id', 'edge_' . $edgeId);
-            $edge->addAttribute('edge', '1');
-            $edge->addAttribute('source', $sourceId);
-            $edge->addAttribute('target', $targetId);
-
-            // Для ответвлений ромбика добавляем подписи
-            if (in_array($sourceId, $this->getDecisionBlockIds($root))) {
-                $edge->addAttribute('style', 'endArrow=block;html=1;label=' . $relation->relationship);
-            } else {
-                $edge->addAttribute('style', 'endArrow=block;html=1;');
-            }
-
-            $edge->addAttribute('parent', '1');
-
-            $geometry = $edge->addChild('mxGeometry');
-            $geometry->addAttribute('relative', '1');
-            $geometry->addAttribute('as', 'geometry');
+        if (!$sourceId || !$targetId) {
+            return;
         }
+
+        // Не дублируем, если стрелка уже есть
+        foreach ($root->mxCell as $cell) {
+            if ((string)$cell['edge'] === '1' &&
+                (string)$cell['source'] === $sourceId &&
+                (string)$cell['target'] === $targetId) {
+                return;
+            }
+        }
+
+        // Добавляем стрелку
+        $edge = $root->addChild('mxCell');
+        $edge->addAttribute('id', 'edge_' . $edgeId);
+        $edge->addAttribute('edge', '1');
+        $edge->addAttribute('source', $sourceId);
+        $edge->addAttribute('target', $targetId);
+
+        if (in_array($sourceId, $this->getDecisionBlockIds($root))) {
+            $edge->addAttribute('style', 'endArrow=block;html=1;label=' . $relation->relationship);
+        } else {
+            $edge->addAttribute('style', 'endArrow=block;html=1;');
+        }
+
+        $edge->addAttribute('parent', '1');
+        $geometry = $edge->addChild('mxGeometry');
+        $geometry->addAttribute('relative', '1');
+        $geometry->addAttribute('as', 'geometry');
     }
+
+
 
 // Вспомогательная функция для получения ID ромбиков
     private function getDecisionBlockIds($root)
@@ -469,5 +675,155 @@ class XmlUploadController extends Controller
             }
         }
         return $ids;
+    }
+
+    public function showTerm($term)
+    {
+        $term = str_replace('__qm__', '?', $term);
+
+        $exists = ClassRelationship::where('class1', $term)
+            ->orWhere('class2', $term)
+            ->exists();
+
+        if (!$exists) {
+            abort(404, 'Терм не найден.');
+        }
+
+        $outgoing = ClassRelationship::where('class1', $term)->get();
+
+        $incoming = ClassRelationship::where('class2', $term)
+            ->whereIn('relationship', ['следствие для', 'по времени (раньше)', 'по времени (позже)'])
+            ->get();
+
+// Добавляем принудительно входящую связь от "Данные корректны?", если нужно
+        $extra = collect();
+        if (in_array($term, ['Переход в профиль', 'Ошибка авторизации'])) {
+            $extra = ClassRelationship::where('class1', 'Данные корректны?')
+                ->where('class2', $term)
+                ->where('relationship', 'следствие для')
+                ->get();
+        }
+
+        $incoming = $incoming->merge($extra);
+
+        // Удаляем входящие дубликаты уже показанных исходящих
+        $filteredIncoming = $incoming->reject(function ($incomingRel) use ($outgoing) {
+            return $outgoing->contains(function ($out) use ($incomingRel) {
+                return $out->class2 === $incomingRel->class1 &&
+                    $out->relationship === $this->inverseRelation($incomingRel->relationship);
+            });
+        });
+
+        $relationships = $outgoing->merge($filteredIncoming)->values();
+
+        $definition = ClassRelationship::where('class1', $term)
+            ->whereNotNull('definition')
+            ->value('definition') ?? 'Описание отсутствует.';
+
+        $terms = ClassRelationship::pluck('class1')
+            ->merge(ClassRelationship::pluck('class2'))
+            ->unique()
+            ->values()
+            ->toArray();
+
+        if (($startKey = array_search('Начало', $terms)) !== false) {
+            unset($terms[$startKey]);
+            array_unshift($terms, 'Начало');
+        }
+        if (($endKey = array_search('Конец', $terms)) !== false) {
+            unset($terms[$endKey]);
+            $terms[] = 'Конец';
+        }
+
+        $index = array_search($term, $terms);
+        $prevTerm = $terms[$index - 1] ?? null;
+        $nextTerm = $terms[$index + 1] ?? null;
+
+        return view('term', compact('term', 'definition', 'relationships', 'prevTerm', 'nextTerm'));
+    }
+
+// 💡 Вспомогательная функция для получения обратного типа связи
+    private function inverseRelation($rel)
+    {
+        return match ($rel) {
+            'следствие для' => 'причина для',
+            'причина для' => 'следствие для',
+            'по времени (раньше)' => 'по времени (позже)',
+            'по времени (позже)' => 'по времени (раньше)',
+            default => $rel,
+        };
+    }
+
+
+
+    public function resetAll()
+    {
+        // Путь к файлу
+        $originalPath = storage_path('app/private/diagram_original.xml');
+        $diagramPath = storage_path('app/private/diagram.xml');
+
+        if (!file_exists($originalPath)) {
+            return back()->with('error', 'Оригинальный XML не найден.');
+        }
+
+        // Перезапись текущего файла
+        copy($originalPath, $diagramPath);
+
+        // Очистка таблицы связей
+        ClassRelationship::truncate();
+
+        // Загрузка XML
+        $xml = simplexml_load_file($diagramPath);
+        $cells = $xml->diagram->mxGraphModel->root->children();
+
+        $nodes = [];
+        $edges = [];
+
+        foreach ($cells as $cell) {
+            $attr = $cell->attributes();
+            if (isset($attr['vertex']) && $attr['vertex'] == '1') {
+                $style = (string)$attr['style'];
+                $type = str_contains($style, 'rhombus') ? 'decision' : 'action';
+
+                $nodes[(string)$attr['id']] = [
+                    'label' => (string)($attr['value'] ?? 'Unknown'),
+                    'type' => $type,
+                ];
+            } elseif (isset($attr['edge']) && $attr['edge'] == '1') {
+                $edges[] = [
+                    'source' => (string)$attr['source'],
+                    'target' => (string)$attr['target'],
+                    'label' => (string)($attr['value'] ?? '')
+                ];
+            }
+        }
+
+        // Добавление связей
+        foreach ($edges as $edge) {
+            $source = $nodes[$edge['source']]['label'] ?? 'Unknown';
+            $target = $nodes[$edge['target']]['label'] ?? 'Unknown';
+            $sourceType = $nodes[$edge['source']]['type'] ?? null;
+
+            $relationship = ($sourceType === 'decision' && !empty($edge['label']))
+                ? $edge['label']
+                : 'причина для';
+
+            ClassRelationship::create([
+                'class1' => $source,
+                'relationship' => $relationship,
+                'class2' => $target,
+                'relationship_type' => $sourceType,
+            ]);
+
+            if ($relationship === 'причина для') {
+                ClassRelationship::create([
+                    'class1' => $target,
+                    'relationship' => 'следствие для',
+                    'class2' => $source,
+                    'relationship_type' => $sourceType,
+                ]);
+            }
+        }
+        return redirect()->route('xml.index')->with('success', 'Данные и схема восстановлены из оригинального XML.');
     }
 }

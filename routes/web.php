@@ -11,5 +11,7 @@ Route::put('/term/update-custom', [XmlUploadController::class, 'customUpdateTerm
 Route::delete('/terms/reset', [XmlUploadController::class, 'resetDefinitions'])->name('terms.reset');
 Route::post('/xml/update-relationship', [XmlUploadController::class, 'updateRelationship'])->name('xml.relationship.update');
 Route::get('/xml/export', [XmlUploadController::class, 'export'])->name('xml.export');
+Route::get('/terms/{term}', [XmlUploadController::class, 'showTerm'])->where('term', '.*')->name('term.show');
+Route::post('/reset-all', [XmlUploadController::class, 'resetAll'])->name('reset.all');
 
 

@@ -107,36 +107,6 @@
         <button type="submit">Загрузить</button>
     </form>
 
-    <!-- Форма фильтрации -->
-    <div class="filters">
-        <h2>Фильтрация связей</h2>
-        <form action="{{ route('xml.filter') }}" method="POST">
-            @csrf
-            <label>Тип связи:</label>
-            <select name="filter_type">
-                <option value="all">Все</option>
-                @foreach($relationshipTypes as $relType)
-                    <option value="{{ $relType }}" {{ request('filter_type') == $relType ? 'selected' : '' }}>
-                        {{ $relType }}
-                    </option>
-                @endforeach
-            </select>
-
-            <label>Поиск по терму:</label>
-            <select name="term_filter">
-                <option value="">Все термы</option>
-                @foreach($terms as $term)
-                    <option value="{{ $term }}" {{ request('term_filter') == $term ? 'selected' : '' }}>
-                        {{ $term }}
-                    </option>
-                @endforeach
-            </select>
-
-
-            <button type="submit">Применить</button>
-        </form>
-    </div>
-
     <!-- Измененная форма редактирования связей -->
     <h2>Редактировать связи</h2>
     <form action="{{ route('xml.relationship.update') }}" method="POST">
@@ -149,24 +119,30 @@
             @endforeach
         </select><br><br>
 
-        <label>Новое имя (определение):</label>
-        <input type="text" name="new_name" placeholder="Оставьте пустым, чтобы не менять"><br><br>
+        <label>Новое имя термина:</label>
+        <input type="text" name="rename_term" placeholder="Новое имя термина" value="{{ old('rename_term') }}">
+
+        <label>Описание терма:</label>
+        <input type="text" name="definition" placeholder="Описание терма (обновится при сохранении)">
 
         <label>Тип узла:</label>
         <select name="node_type">
+            <option value="">-- не выбрано --</option>
             <option value="action">Прямоугольник (Action)</option>
             <option value="decision">Ромб (Decision)</option>
         </select><br><br>
 
         <label>Тип связи:</label>
-        <select name="relationship" required>
+        <select name="relationship">
+            <option value="">-- не выбрано --</option>
             @foreach($allRelations as $relation)
                 <option value="{{ $relation }}">{{ $relation }}</option>
             @endforeach
         </select><br><br>
 
         <label>Назначение (связь с):</label>
-        <select name="target" required>
+        <select name="target">
+            <option value="">-- не выбрано --</option>
             @foreach(array_diff($terms, ['Начало']) as $term)
                 <option value="{{ $term }}">{{ $term }}</option>
             @endforeach
@@ -175,13 +151,11 @@
         <button type="submit">Обновить связь</button>
     </form>
 
-    <form action="{{ route('terms.reset') }}" method="POST" style="margin-top: 20px;">
+    <form action="{{ route('reset.all') }}" method="POST" style="margin-top: 10px;">
         @csrf
-        @method('DELETE')
-        <button type="submit" onclick="return confirm('Вы уверены, что хотите очистить все определения и категории?');">
-            Очистить все определения и категории
-        </button>
+        <button type="submit" onclick="return confirm('Восстановить изначальную диаграмму и связи?')">Сбросить всё</button>
     </form>
+
 
     <form action="{{ route('xml.export') }}" method="GET" style="margin-top: 30px;">
         <button type="submit">Скачать XML</button>
@@ -193,29 +167,16 @@
         <table>
             <thead>
             <tr>
-                <th>Терм 1</th>
-                <th>Тип узла</th>
-                <th>Связь</th>
-                <th>Терм 2</th>
+                <th>Термин</th>
+                <th>Описание</th>
             </tr>
             </thead>
             <tbody>
-            @foreach($relationshipsGrouped as $class => $group)
-                @if($group->count())
-                    <tr>
-                        <td colspan="4" style="background: #ecf0f1; font-weight: bold; text-align: left;">
-                            {{ $class }}
-                        </td>
-                    </tr>
-                    @foreach($group as $rel)
-                        <tr>
-                            <td>{{ $rel->class1 }}</td>
-                            <td>{{ $rel->relationship_type ?? '—' }}</td>
-                            <td>{{ $rel->relationship }}</td>
-                            <td>{{ $rel->class2 }}</td>
-                        </tr>
-                    @endforeach
-                @endif
+            @foreach($terms as $term)
+                <tr>
+                    <td><a href="{{ route('term.show', ['term' => str_replace('?', '__qm__', $term)]) }}">{{ $term }}</a></td>
+                    <td>{{ $definitions[$term] ?: 'Нет описания' }}</td>
+                </tr>
             @endforeach
             </tbody>
         </table>
