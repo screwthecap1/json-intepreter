@@ -181,43 +181,67 @@ class XmlUploadController extends Controller
 
         // Обрабатываем связи
         foreach ($edges as $edge) {
-            $source = $nodes[$edge['source']]['label'] ?? 'Unknown';
-            $target = $nodes[$edge['target']]['label'] ?? 'Unknown';
-            $sourceType = $nodes[$edge['source']]['type'] ?? null;
+            $sourceId = $edge['source'];
+            $targetId = $edge['target'];
+            $label = $edge['label'] ?? '';
 
-            $relationship = ($sourceType === 'decision' && !empty($edge['label']))
-                ? $edge['label']
-                : 'причина для';
+            $sourceNode = $nodes[$sourceId] ?? null;
+            $targetNode = $nodes[$targetId] ?? null;
 
-            // Добавляем прямую связь
+            if (!$sourceNode || !$targetNode) {
+                continue;
+            }
+
+            $sourceText = $sourceNode['label'];
+            $targetText = $targetNode['label'];
+            $sourceType = $sourceNode['type'];
+            $targetType = $targetNode['type'];
+
+            // 💡 Определяем тип связи
+            if ($sourceType === 'decision') {
+                $relation = $label ?: 'условие';
+                $inverse = 'обратное ' . $relation;
+            } elseif ($sourceType === 'action' && $targetType === 'action') {
+                if ($sourceText === 'Переход в профиль' || $sourceText === 'Ошибка авторизации') {
+                    // Эти действия приводят к Концу — Конец = следствие
+                    $relation = 'причина для';
+                    $inverse = 'следствие для';
+                } else {
+                    $relation = 'по времени (раньше)';
+                    $inverse = 'по времени (позже)';
+                }
+            } else {
+                $relation = 'причина для';
+                $inverse = 'следствие для';
+            }
+
+
             ClassRelationship::create([
-                'class1' => $source,
-                'relationship' => $relationship,
-                'class2' => $target,
+                'class1' => $sourceText,
+                'relationship' => $relation,
+                'class2' => $targetText,
                 'relationship_type' => $sourceType,
             ]);
 
-            // Добавляем обратную связь "следствие для", если нужно и ещё не существует
-            if ($relationship === 'причина для' &&
-                !ClassRelationship::where('class1', $target)
-                    ->where('class2', $source)
-                    ->where('relationship', 'следствие для')
-                    ->exists()) {
-                ClassRelationship::create([
-                    'class1' => $target,
-                    'relationship' => 'следствие для',
-                    'class2' => $source,
-                    'relationship_type' => $sourceType,
-                ]);
-            }
+            ClassRelationship::create([
+                'class1' => $targetText,
+                'relationship' => $inverse,
+                'class2' => $sourceText,
+                'relationship_type' => $targetType,
+            ]);
         }
 
         // Удаляем старые связи между Начало и Ввод логина и пароля
         // Удаляем ТОЛЬКО временные связи между Начало и Ввод логина и пароля
+        // Удаляем ВСЕ связи между Начало и Ввод логина и пароля
         ClassRelationship::where('class1', 'Начало')
             ->where('class2', 'Ввод логина и пароля')
-            ->where('relationship', 'по времени (позже)')
             ->delete();
+
+        ClassRelationship::where('class1', 'Ввод логина и пароля')
+            ->where('class2', 'Начало')
+            ->delete();
+
 
         ClassRelationship::where('class1', 'Ввод логина и пароля')
             ->where('class2', 'Начало')
@@ -664,7 +688,6 @@ class XmlUploadController extends Controller
     }
 
 
-
 // Вспомогательная функция для получения ID ромбиков
     private function getDecisionBlockIds($root)
     {
@@ -755,7 +778,6 @@ class XmlUploadController extends Controller
     }
 
 
-
     public function resetAll()
     {
         // Путь к файлу
@@ -800,29 +822,54 @@ class XmlUploadController extends Controller
 
         // Добавление связей
         foreach ($edges as $edge) {
-            $source = $nodes[$edge['source']]['label'] ?? 'Unknown';
-            $target = $nodes[$edge['target']]['label'] ?? 'Unknown';
-            $sourceType = $nodes[$edge['source']]['type'] ?? null;
+            $sourceId = $edge['source'];
+            $targetId = $edge['target'];
+            $label = $edge['label'] ?? '';
 
-            $relationship = ($sourceType === 'decision' && !empty($edge['label']))
-                ? $edge['label']
-                : 'причина для';
+            $sourceNode = $nodes[$sourceId] ?? null;
+            $targetNode = $nodes[$targetId] ?? null;
+
+            if (!$sourceNode || !$targetNode) {
+                continue;
+            }
+
+            $sourceText = $sourceNode['label'];
+            $targetText = $targetNode['label'];
+            $sourceType = $sourceNode['type'];
+            $targetType = $targetNode['type'];
+
+            // 💡 Определяем тип связи
+            if ($sourceType === 'decision') {
+                $relation = $label ?: 'условие';
+                $inverse = 'обратное ' . $relation;
+            } elseif ($sourceType === 'action' && $targetType === 'action') {
+                if ($sourceText === 'Переход в профиль' || $sourceText === 'Ошибка авторизации') {
+                    // Эти действия приводят к Концу — Конец = следствие
+                    $relation = 'причина для';
+                    $inverse = 'следствие для';
+                } else {
+                    $relation = 'по времени (раньше)';
+                    $inverse = 'по времени (позже)';
+                }
+            } else {
+                $relation = 'причина для';
+                $inverse = 'следствие для';
+            }
+
 
             ClassRelationship::create([
-                'class1' => $source,
-                'relationship' => $relationship,
-                'class2' => $target,
+                'class1' => $sourceText,
+                'relationship' => $relation,
+                'class2' => $targetText,
                 'relationship_type' => $sourceType,
             ]);
 
-            if ($relationship === 'причина для') {
-                ClassRelationship::create([
-                    'class1' => $target,
-                    'relationship' => 'следствие для',
-                    'class2' => $source,
-                    'relationship_type' => $sourceType,
-                ]);
-            }
+            ClassRelationship::create([
+                'class1' => $targetText,
+                'relationship' => $inverse,
+                'class2' => $sourceText,
+                'relationship_type' => $targetType,
+            ]);
         }
         return redirect()->route('xml.index')->with('success', 'Данные и схема восстановлены из оригинального XML.');
     }
